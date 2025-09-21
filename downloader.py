@@ -1,16 +1,18 @@
 """Network operations manager for the book downloader application."""
 
+import os
+from pathlib import Path
+from typing import BinaryIO, Callable, Optional, Tuple, Union
+
 import network
 network.init()
 import requests
 import time
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
-from io import BytesIO
-from typing import Callable, Optional, Tuple
-from urllib.parse import urlparse
-from tqdm import tqdm
 from threading import Event
+from urllib.parse import urlparse
+
 from logger import setup_logger
 from config import PROXIES
 from env import (
@@ -29,6 +31,9 @@ if USE_CF_BYPASS:
 logger = setup_logger(__name__)
 
 RATE_LIMIT_STATUS_CODES = {429, 503}
+DOWNLOAD_CHUNK_SIZE = 64 * 1024
+PROGRESS_MIN_INCREMENT = 1.0
+PROGRESS_MIN_INTERVAL = 0.25
 
 
 def _parse_retry_after(retry_after: Optional[str]) -> Optional[float]:
@@ -153,17 +158,83 @@ def html_get_page(url: str, retry: int = MAX_RETRY, use_bypasser: bool = False) 
 
     return ""
 
-def download_url(link: str, size: str = "", progress_callback: Optional[Callable[[float], None]] = None, cancel_flag: Optional[Event] = None) -> Optional[BytesIO]:
-    """Download content from URL into a BytesIO buffer.
-    
+def _parse_size_to_bytes(size: str) -> Optional[int]:
+    """Parse size strings like "1.2 mb" into a byte count."""
+
+    if not size:
+        return None
+
+    cleaned = size.strip().lower()
+    if not cleaned:
+        return None
+
+    cleaned = cleaned.replace(" ", "").replace(",", ".")
+
+    units = {"kb": 1024, "mb": 1024 ** 2, "gb": 1024 ** 3}
+    for unit, multiplier in units.items():
+        if cleaned.endswith(unit):
+            try:
+                value = float(cleaned[: -len(unit)])
+            except ValueError:
+                return None
+            return int(value * multiplier)
+
+    try:
+        return int(float(cleaned))
+    except ValueError:
+        return None
+
+
+def _open_destination(
+    destination: Union[str, os.PathLike[str], BinaryIO]
+) -> Tuple[BinaryIO, Optional[Path], bool]:
+    """Return a writable binary handle for the destination."""
+
+    if hasattr(destination, "write"):
+        return destination, None, False
+
+    if isinstance(destination, (str, os.PathLike)):
+        path = Path(destination)
+        if path.parent and not path.parent.exists():
+            path.parent.mkdir(parents=True, exist_ok=True)
+        handle = path.open("wb")
+        return handle, path, True
+
+    raise TypeError("destination must be a path or binary file-like object")
+
+
+def download_url(
+    link: str,
+    destination: Union[str, os.PathLike[str], BinaryIO],
+    size: str = "",
+    progress_callback: Optional[Callable[[float], None]] = None,
+    cancel_flag: Optional[Event] = None,
+) -> bool:
+    """Stream content from URL into the provided destination.
+
     Args:
-        link: URL to download from
-        
+        link: URL to download from.
+        destination: Path or writable binary handle where the content should be stored.
+        size: Optional human-readable size hint used to improve progress estimation.
+        progress_callback: Optional callback receiving percentage completion updates.
+        cancel_flag: Optional threading.Event to signal cancellation.
+
     Returns:
-        BytesIO: Buffer containing downloaded content if successful
+        bool: True if the download completed successfully, False otherwise.
     """
+
     rate_limit_attempts = 0
     response: Optional[requests.Response] = None
+    file_handle: Optional[BinaryIO] = None
+    destination_path: Optional[Path] = None
+    close_file = False
+    success = False
+
+    try:
+        file_handle, destination_path, close_file = _open_destination(destination)
+    except Exception as exc:
+        logger.error_trace(f"Failed to open destination for download: {exc}")
+        return False
 
     try:
         logger.info(f"Downloading from: {link}")
@@ -188,43 +259,111 @@ def download_url(link: str, size: str = "", progress_callback: Optional[Callable
                 time.sleep(wait_seconds)
 
         if response is None:
-            return None
+            return False
 
         response.raise_for_status()
 
-        total_size : float = 0.0
-        try:
-            # we assume size is in MB
-            total_size = float(size.strip().replace(" ", "").replace(",", ".").upper()[:-2].strip()) * 1024 * 1024
-        except:
-            total_size = float(response.headers.get('content-length', 0))
-        
-        buffer = BytesIO()
+        total_size = _parse_size_to_bytes(size)
+        if total_size is None:
+            content_length = response.headers.get("content-length")
+            if content_length is not None:
+                try:
+                    total_size = int(content_length)
+                except (TypeError, ValueError):
+                    total_size = None
 
-        # Initialize the progress bar with your guess
-        pbar = tqdm(total=total_size, unit='B', unit_scale=True, desc='Downloading')
-        for chunk in response.iter_content(chunk_size=1000):
-            buffer.write(chunk)
-            pbar.update(len(chunk))
-            if progress_callback is not None:
-                progress_callback(pbar.n * 100.0 / total_size)
+        bytes_downloaded = 0
+        last_report_percent = -1.0
+        last_report_time = time.monotonic()
+
+        reported_completion = False
+
+        if progress_callback is not None:
+            try:
+                progress_callback(0.0)
+            except Exception:
+                logger.warning("Progress callback raised an exception at start", exc_info=True)
+            if total_size:
+                last_report_percent = 0.0
+
+        cancelled = False
+
+        for chunk in response.iter_content(chunk_size=DOWNLOAD_CHUNK_SIZE):
             if cancel_flag is not None and cancel_flag.is_set():
-                logger.info(f"Download cancelled: {link}")
-                return None
-            
-        pbar.close()
-        if buffer.tell() * 0.1 < total_size * 0.9:
-            # Check the content of the buffer if its HTML or binary
-            if response.headers.get('content-type', '').startswith('text/html'):
-                logger.warn(f"Failed to download content for {link}. Found HTML content instead.")
-                return None
-        return buffer
+                cancelled = True
+                break
+
+            if not chunk:
+                continue
+
+            file_handle.write(chunk)
+            bytes_downloaded += len(chunk)
+
+            if cancel_flag is not None and cancel_flag.is_set():
+                cancelled = True
+                break
+
+            if progress_callback is not None and total_size:
+                percent = min(bytes_downloaded / total_size * 100.0, 100.0)
+                now = time.monotonic()
+                if (
+                    percent >= 100.0
+                    or percent - last_report_percent >= PROGRESS_MIN_INCREMENT
+                    or now - last_report_time >= PROGRESS_MIN_INTERVAL
+                ):
+                    try:
+                        progress_callback(percent)
+                    except Exception:
+                        logger.warning("Progress callback raised an exception", exc_info=True)
+                    last_report_percent = percent
+                    last_report_time = now
+                    if percent >= 100.0:
+                        reported_completion = True
+
+        if cancelled:
+            logger.info(f"Download cancelled: {link}")
+            return False
+
+        success = True
+
+        if progress_callback is not None and not reported_completion:
+            try:
+                progress_callback(100.0)
+            except Exception:
+                logger.warning("Progress callback raised an exception at completion", exc_info=True)
+
+        if total_size and bytes_downloaded < total_size * 0.9:
+            content_type = response.headers.get("content-type", "")
+            if content_type.startswith("text/html"):
+                logger.warning(
+                    f"Failed to download content for {link}. Found HTML content instead."
+                )
+                success = False
+                return False
+
+        return True
     except requests.exceptions.RequestException as e:
         logger.error_trace(f"Failed to download from {link}: {e}")
-        return None
+        return False
     finally:
         if response is not None:
             response.close()
+        if file_handle is not None:
+            try:
+                file_handle.flush()
+            except Exception:
+                pass
+            if close_file:
+                file_handle.close()
+        if not success and destination_path is not None:
+            try:
+                if destination_path.exists():
+                    destination_path.unlink()
+            except Exception:
+                logger.warning(
+                    f"Failed to remove incomplete download at {destination_path}",
+                    exc_info=True,
+                )
 
 def get_absolute_url(base_url: str, url: str) -> str:
     """Get absolute URL from relative URL and base URL.

@@ -315,15 +315,22 @@ def _extract_book_metadata(
     }
 
 
-def download_book(book_info: BookInfo, book_path: Path, progress_callback: Optional[Callable[[float], None]] = None, cancel_flag: Optional[Event] = None) -> bool:
+def download_book(
+    book_info: BookInfo,
+    book_path: Path,
+    progress_callback: Optional[Callable[[float], None]] = None,
+    cancel_flag: Optional[Event] = None,
+) -> bool:
     """Download a book from available sources.
 
     Args:
-        book_id: Book identifier (MD5 hash)
-        title: Book title for logging
+        book_info: Metadata and download links for the target book.
+        book_path: Destination path where the downloaded file should be stored.
+        progress_callback: Optional callback for reporting download progress.
+        cancel_flag: Optional cancellation signal that stops the download when set.
 
     Returns:
-        Optional[BytesIO]: Book content buffer if successful
+        bool: True if the book was downloaded successfully and stored at book_path
     """
 
     if len(book_info.download_urls) == 0:
@@ -343,13 +350,20 @@ def download_book(book_info: BookInfo, book_path: Path, progress_callback: Optio
             if download_url != "":
                 logger.info(f"Downloading `{book_info.title}` from `{download_url}`")
 
-                data = downloader.download_url(download_url, book_info.size or "", progress_callback, cancel_flag)
-                if not data:
-                    raise Exception("No data received")
+                success = downloader.download_url(
+                    download_url,
+                    book_path,
+                    size=book_info.size or "",
+                    progress_callback=progress_callback,
+                    cancel_flag=cancel_flag,
+                )
+                if not success:
+                    if cancel_flag is not None and cancel_flag.is_set():
+                        logger.info(f"Download cancelled for `{book_info.title}`")
+                        return False
+                    raise Exception("Download failed")
 
-                logger.info(f"Download finished. Writing to {book_path}")
-                with open(book_path, "wb") as f:
-                    f.write(data.getbuffer())
+                logger.info(f"Download finished. Stored at {book_path}")
                 logger.info(f"Writing `{book_info.title}` successfully")
                 return True
 
