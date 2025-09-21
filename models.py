@@ -305,7 +305,29 @@ class BookQueue:
             for book_id, status in self._status.items():
                 if status in [QueueStatus.DONE, QueueStatus.ERROR, QueueStatus.CANCELLED]:
                     to_remove.append(book_id)
-            
+
+            to_remove_set = set(to_remove)
+
+            if to_remove_set:
+                # Drain the priority queue and requeue only items that should remain
+                remaining_items: List[QueueItem] = []
+                while True:
+                    try:
+                        item = self._queue.get_nowait()
+                    except queue.Empty:
+                        break
+
+                    if item.book_id not in to_remove_set:
+                        remaining_items.append(item)
+
+                for item in remaining_items:
+                    self._queue.put(item)
+
+            if self._queue.empty():
+                self._queue_not_empty.clear()
+            else:
+                self._queue_not_empty.set()
+
             removed_count = len(to_remove)
             for book_id in to_remove:
                 self._status.pop(book_id, None)
@@ -313,7 +335,7 @@ class BookQueue:
                 self._book_data.pop(book_id, None)
                 self._cancel_flags.pop(book_id, None)
                 self._active_downloads.pop(book_id, None)
-                
+
             return removed_count
         
     def refresh(self) -> None:

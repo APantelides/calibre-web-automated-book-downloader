@@ -76,6 +76,50 @@ def test_concurrent_download_loop_schedules_next_job(monkeypatch, isolated_queue
     assert not coordinator.is_alive()
 
 
+def test_cancelled_queue_item_removed_before_processing(monkeypatch, isolated_queue):
+    monkeypatch.setattr(backend, "MAX_CONCURRENT_DOWNLOADS", 1)
+
+    cancelled_id = "cancelled"
+    remaining_id = "remaining"
+
+    call_event = threading.Event()
+    download_calls: list[str] = []
+
+    def fake_download(book_id: str, cancel_flag: threading.Event) -> None:
+        download_calls.append(book_id)
+        call_event.set()
+        return None
+
+    monkeypatch.setattr(backend, "_download_book_with_cancellation", fake_download)
+
+    cancelled_info = BookInfo(id=cancelled_id, title="cancel", format="epub")
+    remaining_info = BookInfo(id=remaining_id, title="keep", format="epub")
+
+    isolated_queue.add(cancelled_id, cancelled_info, priority=0)
+    isolated_queue.add(remaining_id, remaining_info, priority=1)
+    assert isolated_queue.cancel_download(cancelled_id)
+
+    assert backend.clear_completed() == 1
+
+    stop_event = threading.Event()
+    coordinator = threading.Thread(
+        target=backend.concurrent_download_loop,
+        kwargs={"stop_event": stop_event},
+        daemon=True,
+    )
+    coordinator.start()
+
+    assert call_event.wait(1.0)
+    _wait_for_drained(isolated_queue)
+
+    stop_event.set()
+    coordinator.join(timeout=2)
+    assert not coordinator.is_alive()
+
+    assert cancelled_id not in download_calls
+    assert remaining_id in download_calls
+
+
 def test_concurrent_download_loop_handles_future_errors(monkeypatch, isolated_queue):
     monkeypatch.setattr(backend, "MAX_CONCURRENT_DOWNLOADS", 1)
 
