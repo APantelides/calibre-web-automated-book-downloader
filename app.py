@@ -543,5 +543,7 @@ if __name__ == '__main__':
     app.run(
         host=FLASK_HOST,
         port=FLASK_PORT,
-        debug=DEBUG 
+        debug=DEBUG,
+        threaded=True,
+        use_reloader=DEBUG
     )
