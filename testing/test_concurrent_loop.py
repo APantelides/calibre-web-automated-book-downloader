@@ -1,0 +1,125 @@
+import threading
+import time
+
+import pytest
+
+import backend
+import models
+from models import BookInfo, QueueStatus
+
+
+@pytest.fixture
+def isolated_queue(monkeypatch):
+    queue = models.BookQueue()
+    monkeypatch.setattr(models, "book_queue", queue)
+    monkeypatch.setattr(backend, "book_queue", queue)
+    return queue
+
+
+def _wait_for_drained(queue: models.BookQueue) -> None:
+    for _ in range(200):
+        if not queue.get_active_downloads():
+            return
+        time.sleep(0.01)
+    raise AssertionError("active downloads did not drain in time")
+
+
+def test_concurrent_download_loop_schedules_next_job(monkeypatch, isolated_queue):
+    monkeypatch.setattr(backend, "MAX_CONCURRENT_DOWNLOADS", 2)
+
+    job_ids = [f"book-{idx}" for idx in range(3)]
+    start_events = {job_id: threading.Event() for job_id in job_ids}
+    release_events = {job_id: threading.Event() for job_id in job_ids}
+    start_times: dict[str, float] = {}
+
+    def fake_process(book_id: str, cancel_flag: threading.Event) -> None:
+        isolated_queue.update_status(book_id, QueueStatus.DOWNLOADING)
+        start_times[book_id] = time.monotonic()
+        start_events[book_id].set()
+        release_events[book_id].wait(timeout=5)
+        if cancel_flag.is_set():
+            isolated_queue.update_status(book_id, QueueStatus.CANCELLED)
+        else:
+            isolated_queue.update_status(book_id, QueueStatus.AVAILABLE)
+
+    monkeypatch.setattr(backend, "_process_single_download", fake_process)
+
+    stop_event = threading.Event()
+    coordinator = threading.Thread(
+        target=backend.concurrent_download_loop,
+        kwargs={"stop_event": stop_event},
+        daemon=True,
+    )
+    coordinator.start()
+
+    for idx, job_id in enumerate(job_ids):
+        info = BookInfo(id=job_id, title=f"title-{idx}", format="epub")
+        isolated_queue.add(job_id, info, priority=idx)
+
+    assert start_events[job_ids[0]].wait(1.0)
+    assert start_events[job_ids[1]].wait(1.0)
+    assert not start_events[job_ids[2]].is_set()
+
+    release_time = time.monotonic()
+    release_events[job_ids[0]].set()
+
+    assert start_events[job_ids[2]].wait(1.0)
+    assert start_times[job_ids[2]] - release_time < 1.0
+
+    release_events[job_ids[1]].set()
+    release_events[job_ids[2]].set()
+
+    _wait_for_drained(isolated_queue)
+
+    stop_event.set()
+    coordinator.join(timeout=2)
+    assert not coordinator.is_alive()
+
+
+def test_concurrent_download_loop_handles_future_errors(monkeypatch, isolated_queue):
+    monkeypatch.setattr(backend, "MAX_CONCURRENT_DOWNLOADS", 1)
+
+    job_ids = ["fail", "ok"]
+    start_events = {job_id: threading.Event() for job_id in job_ids}
+    completion_events = {job_id: threading.Event() for job_id in job_ids}
+    start_times: dict[str, float] = {}
+
+    def fake_process(book_id: str, cancel_flag: threading.Event) -> None:
+        isolated_queue.update_status(book_id, QueueStatus.DOWNLOADING)
+        start_times[book_id] = time.monotonic()
+        start_events[book_id].set()
+        if book_id == "fail":
+            isolated_queue.update_status(book_id, QueueStatus.ERROR)
+            completion_events[book_id].set()
+            raise RuntimeError("boom")
+        isolated_queue.update_status(book_id, QueueStatus.AVAILABLE)
+        completion_events[book_id].set()
+
+    monkeypatch.setattr(backend, "_process_single_download", fake_process)
+
+    stop_event = threading.Event()
+    coordinator = threading.Thread(
+        target=backend.concurrent_download_loop,
+        kwargs={"stop_event": stop_event},
+        daemon=True,
+    )
+    coordinator.start()
+
+    failing_info = BookInfo(id="fail", title="bad", format="epub")
+    ok_info = BookInfo(id="ok", title="good", format="epub")
+    isolated_queue.add("fail", failing_info, priority=0)
+    isolated_queue.add("ok", ok_info, priority=1)
+
+    assert start_events["fail"].wait(1.0)
+    assert completion_events["fail"].wait(1.0)
+    failure_end = time.monotonic()
+
+    assert start_events["ok"].wait(1.0)
+    assert start_times["ok"] - failure_end < 1.0
+    assert completion_events["ok"].wait(1.0)
+
+    _wait_for_drained(isolated_queue)
+
+    stop_event.set()
+    coordinator.join(timeout=2)
+    assert not coordinator.is_alive()

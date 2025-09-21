@@ -6,7 +6,13 @@ from pathlib import Path
 from typing import Dict, List, Optional, Any, Tuple
 import subprocess
 import os
-from concurrent.futures import ThreadPoolExecutor, Future
+from concurrent.futures import (
+    ThreadPoolExecutor,
+    Future,
+    wait,
+    FIRST_COMPLETED,
+    ALL_COMPLETED,
+)
 from threading import Event
 
 from logger import setup_logger
@@ -292,45 +298,102 @@ def _process_single_download(book_id: str, cancel_flag: Event) -> None:
             logger.info(f"Download cancelled: {book_id}")
             book_queue.update_status(book_id, QueueStatus.CANCELLED)
 
-def concurrent_download_loop() -> None:
+def concurrent_download_loop(stop_event: Optional[Event] = None) -> None:
     """Main download coordinator using ThreadPoolExecutor for concurrent downloads."""
-    logger.info(f"Starting concurrent download loop with {MAX_CONCURRENT_DOWNLOADS} workers")
-    
-    with ThreadPoolExecutor(max_workers=MAX_CONCURRENT_DOWNLOADS, thread_name_prefix="BookDownload") as executor:
-        active_futures: Dict[Future, str] = {}  # Track active download futures
-        
+    logger.info(
+        f"Starting concurrent download loop with {MAX_CONCURRENT_DOWNLOADS} workers"
+    )
+
+    with ThreadPoolExecutor(
+        max_workers=MAX_CONCURRENT_DOWNLOADS, thread_name_prefix="BookDownload"
+    ) as executor:
+        active_futures: Dict[Future, str] = {}
+
         while True:
-            # Clean up completed futures
-            completed_futures = [f for f in active_futures if f.done()]
-            for future in completed_futures:
-                book_id = active_futures.pop(future)
-                try:
-                    future.result()  # This will raise any exceptions from the worker
-                except Exception as e:
-                    logger.error_trace(f"Future exception for {book_id}: {e}")
-            
+            if stop_event and stop_event.is_set():
+                logger.info("Shutdown signal received for download coordinator")
+                # Wait for any in-flight downloads to finish gracefully
+                if active_futures:
+                    done, _ = wait(
+                        active_futures.keys(),
+                        return_when=ALL_COMPLETED,
+                    )
+                    for future in done:
+                        book_id = active_futures.pop(future, None)
+                        if book_id is None:
+                            continue
+                        try:
+                            future.result()
+                        except Exception as e:
+                            logger.error_trace(
+                                f"Future exception during shutdown for {book_id}: {e}"
+                            )
+                break
+
             # Start new downloads if we have capacity
+            started_download = False
             while len(active_futures) < MAX_CONCURRENT_DOWNLOADS:
-                next_download = book_queue.get_next()
+                block_for_job = not active_futures
+                timeout = 0.1 if stop_event and block_for_job else None
+                next_download = book_queue.get_next(block=block_for_job, timeout=timeout)
                 if not next_download:
                     break
-                    
+
                 book_id, cancel_flag = next_download
                 logger.info(f"Starting concurrent download: {book_id}")
-                
-                # Submit download job to thread pool
+
                 future = executor.submit(_process_single_download, book_id, cancel_flag)
                 active_futures[future] = book_id
-            
-            # Brief sleep to prevent busy waiting
-            time.sleep(MAIN_LOOP_SLEEP_TIME)
+                started_download = True
 
-# Start concurrent download coordinator
-download_coordinator_thread = threading.Thread(
-    target=concurrent_download_loop,
-    daemon=True,
-    name="DownloadCoordinator"
-)
-download_coordinator_thread.start()
+            if started_download:
+                # Immediately loop to check for additional available slots or completions
+                continue
 
-logger.info(f"Download system initialized with {MAX_CONCURRENT_DOWNLOADS} concurrent workers")
+            if not active_futures:
+                # No active work—wait for new jobs to arrive
+                wait_timeout = 0.1 if stop_event else None
+                book_queue.wait_for_item(timeout=wait_timeout)
+                continue
+
+            wait_timeout = 0.1 if stop_event else None
+            done, _ = wait(
+                active_futures.keys(),
+                timeout=wait_timeout,
+                return_when=FIRST_COMPLETED,
+            )
+
+            if not done:
+                # Timed out waiting (likely because we're checking for shutdown)
+                continue
+
+            for future in done:
+                book_id = active_futures.pop(future, None)
+                if book_id is None:
+                    continue
+                try:
+                    future.result()
+                except Exception as e:
+                    logger.error_trace(f"Future exception for {book_id}: {e}")
+
+def _is_truthy(value: str) -> bool:
+    return value.lower() in {"1", "true", "yes", "on"}
+
+
+disable_coordinator = _is_truthy(os.getenv("DISABLE_DOWNLOAD_COORDINATOR", "false"))
+
+if not disable_coordinator:
+    # Start concurrent download coordinator
+    download_coordinator_thread = threading.Thread(
+        target=concurrent_download_loop,
+        daemon=True,
+        name="DownloadCoordinator",
+    )
+    download_coordinator_thread.start()
+
+    logger.info(
+        f"Download system initialized with {MAX_CONCURRENT_DOWNLOADS} concurrent workers"
+    )
+else:
+    download_coordinator_thread = None
+    logger.info("Download coordinator disabled by configuration")
