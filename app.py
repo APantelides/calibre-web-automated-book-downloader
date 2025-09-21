@@ -257,8 +257,13 @@ def api_download() -> Union[Response, Tuple[Response, int]]:
     if not book_id:
         return jsonify({"error": "No book ID provided"}), 400
 
+    priority_raw = request.args.get('priority', '0')
     try:
-        priority = int(request.args.get('priority', 0))
+        priority = int(priority_raw)
+    except (TypeError, ValueError):
+        return jsonify({"error": "Invalid priority value: must be an integer."}), 400
+
+    try:
         success = backend.queue_book(book_id, priority)
         if success:
             return jsonify({"status": "queued", "priority": priority})
