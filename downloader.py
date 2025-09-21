@@ -116,7 +116,6 @@ def html_get_page(url: str, retry: int = MAX_RETRY, use_bypasser: bool = False) 
             rate_limit_attempts = 0
             response.raise_for_status()
             logger.debug(f"Success getting: {url}")
-            time.sleep(1)
             return str(response.text)
 
         except Exception as e:
