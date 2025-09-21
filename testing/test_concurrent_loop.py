@@ -1,6 +1,7 @@
 import threading
 import time
 import shutil
+from pathlib import Path
 
 import pytest
 
@@ -282,3 +283,57 @@ def test_download_copy_fallback_handles_move_failure(
     assert not book_path.exists()
     assert isolated_queue._status[book_id] != QueueStatus.ERROR
     assert move_attempts["count"] == 1
+
+
+def test_downloads_with_colliding_titles_create_unique_outputs(
+    monkeypatch, isolated_queue, tmp_path
+):
+    tmp_dir = tmp_path / "tmp"
+    ingest_dir = tmp_path / "ingest"
+    tmp_dir.mkdir()
+    ingest_dir.mkdir()
+
+    monkeypatch.setattr(backend, "TMP_DIR", tmp_dir)
+    monkeypatch.setattr(backend, "INGEST_DIR", ingest_dir)
+    monkeypatch.setattr(backend, "CUSTOM_SCRIPT", "")
+    monkeypatch.setattr(backend, "USE_BOOK_TITLE", True)
+
+    def fake_download(book_info, destination, progress_callback, cancel_flag):
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_text(f"content-{book_info.id}")
+        return True
+
+    monkeypatch.setattr(
+        backend.book_manager,
+        "download_book",
+        fake_download,
+    )
+
+    first_info = BookInfo(id="collision-1", title="Same Title!", format="epub")
+    second_info = BookInfo(id="collision-2", title="Same Title?", format="epub")
+
+    isolated_queue._book_data[first_info.id] = first_info
+    isolated_queue._book_data[second_info.id] = second_info
+
+    first_path = Path(
+        backend._download_book_with_cancellation(first_info.id, threading.Event())
+    )
+    second_path = Path(
+        backend._download_book_with_cancellation(second_info.id, threading.Event())
+    )
+
+    assert first_path != second_path
+    assert first_path.exists()
+    assert second_path.exists()
+
+    sanitized_title = backend._sanitize_filename(first_info.title)
+    assert sanitized_title == backend._sanitize_filename(second_info.title)
+    assert sanitized_title in first_path.name
+    assert sanitized_title in second_path.name
+    assert first_path.name != second_path.name
+
+    assert first_path.read_text() == "content-collision-1"
+    assert second_path.read_text() == "content-collision-2"
+
+    ingest_files = sorted(p for p in ingest_dir.iterdir() if p.is_file())
+    assert len(ingest_files) == 2

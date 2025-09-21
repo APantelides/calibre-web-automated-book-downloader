@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Any, Tuple
 import subprocess
 import os
+import hashlib
 from concurrent.futures import (
     ThreadPoolExecutor,
     Future,
@@ -150,10 +151,16 @@ def _download_book_with_cancellation(book_id: str, cancel_flag: Event) -> Option
         logger.info(f"Starting download: {book_info.title}")
 
         if USE_BOOK_TITLE:
-            book_name = _sanitize_filename(book_info.title)
+            sanitized_title = _sanitize_filename(book_info.title)
+            if not sanitized_title:
+                sanitized_title = "book"
+            unique_suffix = hashlib.md5(book_id.encode("utf-8")).hexdigest()[:8]
+            filename_stem = f"{sanitized_title}-{unique_suffix}"
         else:
-            book_name = book_id
-        book_name += f".{book_info.format}"
+            filename_stem = book_id
+
+        extension = f".{book_info.format}" if book_info.format else ""
+        book_name = f"{filename_stem}{extension}"
         book_path = TMP_DIR / book_name
 
         # Check cancellation before download
@@ -231,7 +238,7 @@ def _download_book_with_cancellation(book_id: str, cancel_flag: Event) -> Option
                     intermediate_path.unlink()
                 return None
                 
-            os.rename(intermediate_path, final_path)
+            os.replace(intermediate_path, final_path)
             logger.info(f"Download completed successfully: {book_info.title}")
             
         return str(final_path)
