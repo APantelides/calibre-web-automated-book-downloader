@@ -1,7 +1,16 @@
-import requests
-import time
 import os
 import hashlib
+import time
+
+import pytest
+import requests
+
+
+if os.getenv("RUN_E2E_TESTS") != "1":
+    pytest.skip(
+        "Requires running server and external services",
+        allow_module_level=True,
+    )
 
 # Thee server is already running, so let's grab some of the env vars:
 # Use absolute import since the script is run from the root directory
