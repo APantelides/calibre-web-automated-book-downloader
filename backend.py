@@ -87,17 +87,19 @@ def queue_status() -> Dict[str, Dict[str, Any]]:
         Dict: Queue status organized by status type
     """
     status = book_queue.get_status()
-    for _, books in status.items():
-        for _, book_info in books.items():
-            if book_info.download_path:
-                if not os.path.exists(book_info.download_path):
-                    book_info.download_path = None
+    serialized_status: Dict[str, Dict[str, Dict[str, Any]]] = {}
 
-    # Convert Enum keys to strings and properly format the response
-    return {
-        status_type.value: books
-        for status_type, books in status.items()
-    }
+    for status_type, books in status.items():
+        serialized_books: Dict[str, Dict[str, Any]] = {}
+        for book_id, book_info in books.items():
+            if book_info.download_path and not os.path.exists(book_info.download_path):
+                book_info.download_path = None
+
+            serialized_books[book_id] = _book_info_to_dict(book_info)
+
+        serialized_status[status_type.value] = serialized_books
+
+    return serialized_status
 
 def get_book_data(book_id: str) -> Tuple[Optional[bytes], BookInfo]:
     """Get book data for a specific book, including its title.
