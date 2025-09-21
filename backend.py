@@ -101,13 +101,14 @@ def queue_status() -> Dict[str, Dict[str, Any]]:
 
 def get_book_data(book_id: str) -> Tuple[Optional[bytes], BookInfo]:
     """Get book data for a specific book, including its title.
-    
+
     Args:
         book_id: Book identifier
-        
+
     Returns:
         Tuple[Optional[bytes], str]: Book data if available, and the book title
     """
+    book_info: Optional[BookInfo] = None
     try:
         book_info = book_queue._book_data[book_id]
         path = book_info.download_path
@@ -115,9 +116,10 @@ def get_book_data(book_id: str) -> Tuple[Optional[bytes], BookInfo]:
             return f.read(), book_info
     except Exception as e:
         logger.error_trace(f"Error getting book data: {e}")
-        if book_info:
+        if book_info is not None:
             book_info.download_path = None
-        return None, book_info if book_info else BookInfo(id=book_id, title="Unknown")
+            return None, book_info
+        return None, BookInfo(id=book_id, title="Unknown")
 
 def _book_info_to_dict(book: BookInfo) -> Dict[str, Any]:
     """Convert BookInfo object to dictionary representation."""
