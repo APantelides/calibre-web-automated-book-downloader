@@ -167,3 +167,63 @@ def test_concurrent_download_loop_handles_future_errors(monkeypatch, isolated_qu
     stop_event.set()
     coordinator.join(timeout=2)
     assert not coordinator.is_alive()
+
+
+def test_clear_completed_prevents_stale_job_processing(monkeypatch, isolated_queue):
+    monkeypatch.setattr(backend, "MAX_CONCURRENT_DOWNLOADS", 1)
+
+    retrieved_event = threading.Event()
+    release_event = threading.Event()
+    download_called = threading.Event()
+
+    original_get = isolated_queue._queue.get
+    first_call = True
+
+    def blocking_get(*args, **kwargs):
+        nonlocal first_call
+        item = original_get(*args, **kwargs)
+        if first_call:
+            first_call = False
+            retrieved_event.set()
+            if not release_event.wait(timeout=1.0):
+                raise TimeoutError("release_event was not set")
+        return item
+
+    monkeypatch.setattr(isolated_queue._queue, "get", blocking_get)
+
+    def fake_download(book_id: str, cancel_flag: threading.Event) -> None:
+        download_called.set()
+        return None
+
+    monkeypatch.setattr(
+        backend,
+        "_download_book_with_cancellation",
+        fake_download,
+    )
+
+    book_id = "stale-job"
+    info = BookInfo(id=book_id, title="stale", format="epub")
+    isolated_queue.add(book_id, info, priority=0)
+    assert isolated_queue.cancel_download(book_id)
+
+    stop_event = threading.Event()
+    coordinator = threading.Thread(
+        target=backend.concurrent_download_loop,
+        kwargs={"stop_event": stop_event},
+        daemon=True,
+    )
+    coordinator.start()
+
+    try:
+        try:
+            assert retrieved_event.wait(1.0)
+            assert backend.clear_completed() == 1
+        finally:
+            release_event.set()
+
+        assert not download_called.wait(0.3)
+        assert isolated_queue.get_active_downloads() == []
+    finally:
+        stop_event.set()
+        coordinator.join(timeout=2)
+        assert not coordinator.is_alive()

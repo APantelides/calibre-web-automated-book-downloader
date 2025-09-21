@@ -103,6 +103,12 @@ class BookQueue:
             book_id = queue_item.book_id
 
             with self._lock:
+                # Skip items that were cleared while waiting for the lock
+                if book_id not in self._book_data or book_id not in self._status:
+                    if self._queue.empty():
+                        self._queue_not_empty.clear()
+                    continue
+
                 # Check if book was cancelled while in queue
                 if (
                     book_id in self._status
