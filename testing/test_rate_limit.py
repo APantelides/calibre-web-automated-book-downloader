@@ -64,7 +64,7 @@ def test_html_get_page_respects_retry_after_seconds(monkeypatch, sleep_calls):
 
     assert result == "ok"
     assert pytest.approx(retry_after_seconds) == sleep_calls[0]
-    assert 1 in sleep_calls  # success sleep
+    assert len(sleep_calls) == 1
 
 
 def test_html_get_page_retry_after_http_date(monkeypatch, sleep_calls):
@@ -84,6 +84,21 @@ def test_html_get_page_retry_after_http_date(monkeypatch, sleep_calls):
 
     assert result == "ok"
     assert pytest.approx(retry_delay.total_seconds(), abs=1.0) == sleep_calls[0]
+    assert len(sleep_calls) == 1
+
+
+def test_html_get_page_success_does_not_sleep(monkeypatch, sleep_calls):
+    responses = [DummyResponse(200, text="ok")]
+
+    def fake_get(url, **kwargs):
+        return responses.pop(0)
+
+    monkeypatch.setattr(downloader.requests, "get", fake_get)
+
+    result = downloader.html_get_page("http://example.com")
+
+    assert result == "ok"
+    assert sleep_calls == []
 
 
 def _install_dummy_tqdm(monkeypatch):
