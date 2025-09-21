@@ -61,6 +61,7 @@ class BookQueue:
         self._status_timeout = timedelta(seconds=STATUS_TIMEOUT)  # 1 hour timeout
         self._cancel_flags: dict[str, Event] = {}  # Cancellation flags for active downloads
         self._active_downloads: dict[str, bool] = {}  # Track currently downloading books
+        self._queue_not_empty = Event()
     
     def add(self, book_id: str, book_data: BookInfo, priority: int = 0) -> None:
         """Add a book to the queue with specified priority.
@@ -80,30 +81,45 @@ class BookQueue:
             self._queue.put(queue_item)
             self._book_data[book_id] = book_data
             self._update_status(book_id, QueueStatus.QUEUED)
-    
-    def get_next(self) -> Optional[Tuple[str, Event]]:
+            self._queue_not_empty.set()
+
+    def get_next(self, block: bool = False, timeout: Optional[float] = None) -> Optional[Tuple[str, Event]]:
         """Get next book ID from queue with cancellation flag.
-        
+
         Returns:
             Tuple of (book_id, cancel_flag) or None if queue is empty
         """
-        try:
-            queue_item = self._queue.get_nowait()
+        deadline = None if timeout is None else time.monotonic() + timeout
+
+        while True:
+            try:
+                wait_timeout = None
+                if deadline is not None:
+                    wait_timeout = max(0, deadline - time.monotonic())
+                queue_item = self._queue.get(block=block, timeout=wait_timeout)
+            except queue.Empty:
+                return None
+
             book_id = queue_item.book_id
-            
+
             with self._lock:
                 # Check if book was cancelled while in queue
-                if book_id in self._status and self._status[book_id] == QueueStatus.CANCELLED:
-                    return self.get_next()  # Recursively get next non-cancelled item
-                
-                # Create cancellation flag for this download
+                if (
+                    book_id in self._status
+                    and self._status[book_id] == QueueStatus.CANCELLED
+                ):
+                    if self._queue.empty():
+                        self._queue_not_empty.clear()
+                    # Continue waiting for next valid item
+                    continue
+
                 cancel_flag = Event()
                 self._cancel_flags[book_id] = cancel_flag
                 self._active_downloads[book_id] = True
-                
+                if self._queue.empty():
+                    self._queue_not_empty.clear()
+
             return book_id, cancel_flag
-        except queue.Empty:
-            return None
             
     def _update_status(self, book_id: str, status: QueueStatus) -> None:
         """Internal method to update status and timestamp."""
@@ -273,6 +289,10 @@ class BookQueue:
         """Get list of currently active download book IDs."""
         with self._lock:
             return list(self._active_downloads.keys())
+
+    def wait_for_item(self, timeout: Optional[float] = None) -> bool:
+        """Block until at least one queued item is available."""
+        return self._queue_not_empty.wait(timeout)
             
     def clear_completed(self) -> int:
         """Remove all completed, errored, or cancelled books from tracking.
