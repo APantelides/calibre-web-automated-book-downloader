@@ -1,5 +1,6 @@
 import threading
 import time
+import shutil
 
 import pytest
 
@@ -227,3 +228,57 @@ def test_clear_completed_prevents_stale_job_processing(monkeypatch, isolated_que
         stop_event.set()
         coordinator.join(timeout=2)
         assert not coordinator.is_alive()
+
+
+def test_download_copy_fallback_handles_move_failure(
+    monkeypatch, isolated_queue, tmp_path
+):
+    tmp_dir = tmp_path / "tmp"
+    ingest_dir = tmp_path / "ingest"
+    tmp_dir.mkdir()
+    ingest_dir.mkdir()
+
+    monkeypatch.setattr(backend, "TMP_DIR", tmp_dir)
+    monkeypatch.setattr(backend, "INGEST_DIR", ingest_dir)
+    monkeypatch.setattr(backend, "CUSTOM_SCRIPT", "")
+    monkeypatch.setattr(backend, "USE_BOOK_TITLE", False)
+
+    book_id = "copy-fallback"
+    book_info = BookInfo(id=book_id, title="copy", format="epub")
+    isolated_queue.add(book_id, book_info, priority=0)
+
+    book_path = tmp_dir / f"{book_id}.{book_info.format}"
+    intermediate_path = ingest_dir / f"{book_id}.crdownload"
+    intermediate_path.write_text("stale")
+
+    def fake_download(book_info, destination, progress_callback, cancel_flag):
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_text("content")
+        return True
+
+    monkeypatch.setattr(
+        backend.book_manager,
+        "download_book",
+        fake_download,
+    )
+
+    real_move = shutil.move
+    move_attempts = {"count": 0}
+
+    def flaky_move(src, dst, *args, **kwargs):
+        if move_attempts["count"] == 0:
+            move_attempts["count"] += 1
+            raise RuntimeError("temporary move failure")
+        return real_move(src, dst, *args, **kwargs)
+
+    monkeypatch.setattr(backend.shutil, "move", flaky_move)
+
+    result = backend._download_book_with_cancellation(book_id, threading.Event())
+
+    final_path = ingest_dir / f"{book_id}.{book_info.format}"
+    assert result == str(final_path)
+    assert final_path.exists()
+    assert not intermediate_path.exists()
+    assert not book_path.exists()
+    assert isolated_queue._status[book_id] != QueueStatus.ERROR
+    assert move_attempts["count"] == 1

@@ -196,14 +196,34 @@ def _download_book_with_cancellation(book_id: str, cancel_flag: Event) -> Option
             try:
                 shutil.move(book_path, intermediate_path)
             except Exception as e:
+                logger.debug(
+                    f"Error moving book: {e}, will try copying instead"
+                )
                 try:
-                    logger.debug(f"Error moving book: {e}, will try copying instead")
-                    shutil.move(book_path, intermediate_path)
-                except Exception as e:
-                    logger.debug(f"Error copying book: {e}, will try copying without permissions instead")
+                    intermediate_path.unlink(missing_ok=True)
+                except Exception as cleanup_error:
+                    logger.debug(
+                        "Error removing stale intermediate file before copy: %s",
+                        cleanup_error,
+                    )
+                try:
+                    shutil.copy2(book_path, intermediate_path)
+                except Exception as copy_error:
+                    logger.debug(
+                        "Error copying book: %s, will try copying without permissions instead",
+                        copy_error,
+                    )
+                    try:
+                        intermediate_path.unlink(missing_ok=True)
+                    except Exception as cleanup_error:
+                        logger.debug(
+                            "Error removing stale intermediate file before fallback copy: %s",
+                            cleanup_error,
+                        )
                     shutil.copyfile(book_path, intermediate_path)
-                os.remove(book_path)
-            
+                if book_path.exists():
+                    book_path.unlink()
+
             # Final cancellation check before completing
             if cancel_flag.is_set():
                 logger.info(f"Download cancelled before final rename: {book_id}")
