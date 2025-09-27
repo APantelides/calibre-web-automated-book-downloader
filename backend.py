@@ -7,6 +7,8 @@ from typing import Dict, List, Optional, Any, Tuple
 import subprocess
 import os
 import hashlib
+import json
+from datetime import datetime
 from concurrent.futures import (
     ThreadPoolExecutor,
     Future,
@@ -24,10 +26,158 @@ import book_manager
 
 logger = setup_logger(__name__)
 
+_DUPLICATE_STATE_FILE = Path(__file__).resolve().parent / "data" / "duplicate-review.json"
+_DUPLICATE_STATE_LOCK = threading.Lock()
+
 def _sanitize_filename(filename: str) -> str:
     """Sanitize a filename by replacing spaces with underscores and removing invalid characters."""
     keepcharacters = (' ','.','_')
     return "".join(c for c in filename if c.isalnum() or c in keepcharacters).rstrip()
+
+
+def _hash_file(path: Path, chunk_size: int = 1024 * 1024) -> str:
+    """Return a SHA-256 hash of the file at ``path``."""
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(chunk_size), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _load_duplicate_state_unlocked() -> Dict[str, Dict[str, Any]]:
+    try:
+        with _DUPLICATE_STATE_FILE.open("r", encoding="utf-8") as handle:
+            data = json.load(handle)
+            if isinstance(data, dict):
+                return data
+    except FileNotFoundError:
+        return {}
+    except Exception as exc:  # pragma: no cover - defensive logging
+        logger.error_trace(f"Failed to load duplicate state: {exc}")
+    return {}
+
+
+def _load_duplicate_state() -> Dict[str, Dict[str, Any]]:
+    with _DUPLICATE_STATE_LOCK:
+        return _load_duplicate_state_unlocked()
+
+
+def _save_duplicate_state_unlocked(state: Dict[str, Dict[str, Any]]) -> None:
+    try:
+        _DUPLICATE_STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
+        with _DUPLICATE_STATE_FILE.open("w", encoding="utf-8") as handle:
+            json.dump(state, handle, indent=2, sort_keys=True)
+    except Exception as exc:  # pragma: no cover - defensive logging
+        logger.error_trace(f"Failed to save duplicate state: {exc}")
+
+
+def _save_duplicate_state(state: Dict[str, Dict[str, Any]]) -> None:
+    with _DUPLICATE_STATE_LOCK:
+        _save_duplicate_state_unlocked(state)
+
+
+def set_duplicate_reviewed(group_id: str, reviewed: bool) -> None:
+    """Persist the review state for a duplicate group."""
+    if not group_id:
+        raise ValueError("group_id is required")
+
+    with _DUPLICATE_STATE_LOCK:
+        state = _load_duplicate_state_unlocked()
+        if reviewed:
+            state[group_id] = {
+                "reviewed": True,
+                "timestamp": datetime.utcnow().isoformat() + "Z",
+            }
+        else:
+            state.pop(group_id, None)
+        _save_duplicate_state_unlocked(state)
+
+
+def resolve_ingest_file(relative_path: str) -> Path:
+    """Return a safe absolute path within ``INGEST_DIR`` for the given relative path."""
+    if not relative_path:
+        raise ValueError("relative_path is required")
+
+    root = INGEST_DIR.resolve()
+    candidate = (root / relative_path).resolve()
+    if not candidate.exists() or not candidate.is_file():
+        raise FileNotFoundError(relative_path)
+    try:
+        candidate.relative_to(root)
+    except ValueError:
+        raise ValueError("Path escapes ingest directory")
+    return candidate
+
+
+def list_duplicates() -> Dict[str, Any]:
+    """Return potential duplicate groups within ``INGEST_DIR``."""
+    if not INGEST_DIR.exists():
+        return {"groups": []}
+
+    state = _load_duplicate_state()
+    root = INGEST_DIR.resolve()
+    entries: List[Dict[str, Any]] = []
+
+    for path in sorted(root.rglob("*")):
+        if not path.is_file():
+            continue
+
+        try:
+            relative_path = path.relative_to(root).as_posix()
+        except ValueError:
+            continue
+
+        sanitized_stem = _sanitize_filename(path.stem).lower() or path.stem.lower()
+        try:
+            file_hash = _hash_file(path)
+        except Exception as exc:  # pragma: no cover - defensive logging
+            logger.error_trace(f"Unable to hash {path}: {exc}")
+            continue
+
+        stat = path.stat()
+        entries.append(
+            {
+                "name": path.name,
+                "relative_path": relative_path,
+                "size": stat.st_size,
+                "modified": datetime.utcfromtimestamp(stat.st_mtime).isoformat() + "Z",
+                "stem": sanitized_stem,
+                "hash": file_hash,
+                "extension": path.suffix.lstrip("."),
+            }
+        )
+
+    groups: List[Dict[str, Any]] = []
+
+    stem_map: Dict[str, List[Dict[str, Any]]] = {}
+    hash_map: Dict[str, List[Dict[str, Any]]] = {}
+
+    for entry in entries:
+        stem_map.setdefault(entry["stem"], []).append(entry)
+        hash_map.setdefault(entry["hash"], []).append(entry)
+
+    def build_group(group_type: str, key: str, files: List[Dict[str, Any]]) -> Dict[str, Any]:
+        group_id = f"{group_type}:{key}"
+        review_state = state.get(group_id, {})
+        return {
+            "id": group_id,
+            "type": group_type,
+            "key": key,
+            "files": files,
+            "reviewed": bool(review_state.get("reviewed")),
+            "reviewed_at": review_state.get("timestamp"),
+        }
+
+    for stem, files in stem_map.items():
+        if len(files) > 1:
+            groups.append(build_group("stem", stem, files))
+
+    for file_hash, files in hash_map.items():
+        if len(files) > 1:
+            groups.append(build_group("hash", file_hash, files))
+
+    groups.sort(key=lambda g: (g["type"], g["key"]))
+    return {"groups": groups}
 
 def search_books(query: str, filters: SearchFilters) -> List[Dict[str, Any]]:
     """Search for books matching the query.

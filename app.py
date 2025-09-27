@@ -347,6 +347,73 @@ def api_status() -> Union[Response, Tuple[Response, int]]:
         logger.error_trace(f"Status error: {e}")
         return jsonify({"error": str(e)}), 500
 
+
+@app.route('/api/duplicates', methods=['GET', 'POST'])
+@login_required
+def api_duplicates() -> Union[Response, Tuple[Response, int]]:
+    """Expose duplicate scan results and allow review state updates."""
+    if request.method == 'GET':
+        try:
+            data = backend.list_duplicates()
+            return jsonify(data)
+        except Exception as e:
+            logger.error_trace(f"Duplicate scan error: {e}")
+            return jsonify({"error": str(e)}), 500
+
+    payload = request.get_json(silent=True) or {}
+    action = payload.get('action')
+    group_id = payload.get('group_id')
+
+    if action not in {'mark_reviewed', 'clear_reviewed'} or not group_id:
+        return jsonify({"error": "Invalid action or group_id"}), 400
+
+    try:
+        backend.set_duplicate_reviewed(group_id, action == 'mark_reviewed')
+        return jsonify({
+            "status": "ok",
+            "group_id": group_id,
+            "reviewed": action == 'mark_reviewed',
+        })
+    except FileNotFoundError as e:
+        # If marking a group that no longer exists just clear the review state
+        logger.warning(f"Duplicate review target missing: {e}")
+        backend.set_duplicate_reviewed(group_id, False)
+        return jsonify({"status": "ok", "group_id": group_id, "reviewed": False})
+    except Exception as e:
+        logger.error_trace(f"Failed to update duplicate review state: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/api/duplicates/file', methods=['GET'])
+@login_required
+def api_duplicate_file() -> Union[Response, Tuple[Response, int]]:
+    """Send a file from the ingest directory associated with a duplicate group."""
+    relative_path = request.args.get('path', '')
+    inline = request.args.get('inline', '') == '1'
+
+    if not relative_path:
+        return jsonify({"error": "Missing path"}), 400
+
+    try:
+        file_path = backend.resolve_ingest_file(relative_path)
+    except FileNotFoundError:
+        return jsonify({"error": "File not found"}), 404
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    except Exception as e:
+        logger.error_trace(f"Duplicate file retrieval error: {e}")
+        return jsonify({"error": str(e)}), 500
+
+    try:
+        return send_file(
+            file_path,
+            as_attachment=not inline,
+            download_name=os.path.basename(file_path),
+        )
+    except Exception as e:
+        logger.error_trace(f"Failed to send duplicate file: {e}")
+        return jsonify({"error": str(e)}), 500
+
 @app.route('/api/localdownload', methods=['GET'])
 @login_required
 def api_local_download() -> Union[Response, Tuple[Response, int]]:
