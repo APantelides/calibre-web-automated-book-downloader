@@ -24,6 +24,11 @@
     statusLoading: document.getElementById('status-loading'),
     statusList: document.getElementById('status-list'),
     activeDownloadsCount: document.getElementById('active-downloads-count'),
+    duplicatesSection: document.getElementById('duplicates-section'),
+    duplicatesList: document.getElementById('duplicates-list'),
+    duplicatesEmpty: document.getElementById('duplicates-empty'),
+    duplicatesLoading: document.getElementById('duplicates-loading'),
+    duplicatesRefreshBtn: document.getElementById('refresh-duplicates-button'),
     // Active downloads (top section under search)
     activeTopSec: document.getElementById('active-downloads-top'),
     activeTopList: document.getElementById('active-downloads-list'),
@@ -42,7 +47,9 @@
     cancelDownload: '/request/api/download',
     setPriority: '/request/api/queue',
     clearCompleted: '/request/api/queue/clear',
-    activeDownloads: '/request/api/downloads/active'
+    activeDownloads: '/request/api/downloads/active',
+    duplicates: '/request/api/duplicates',
+    duplicateFile: '/request/api/duplicates/file'
   };
   const FILTERS = ['isbn', 'author', 'title', 'lang', 'sort', 'content', 'format'];
 
@@ -83,7 +90,22 @@
     // Simple notification via alert fallback
     toast(msg) { try { console.info(msg); } catch (_) {} },
     // Escapes text for safe HTML injection
-    e(text) { return (text ?? '').toString(); }
+    e(text) { return (text ?? '').toString(); },
+    formatBytes(bytes) {
+      if (typeof bytes !== 'number' || Number.isNaN(bytes)) return '-';
+      if (bytes === 0) return '0 B';
+      const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+      const exponent = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1);
+      const value = bytes / Math.pow(1024, exponent);
+      return `${value.toFixed(value >= 10 || exponent === 0 ? 0 : 1)} ${units[exponent]}`;
+    },
+    formatDate(iso) {
+      try {
+        return new Date(iso).toLocaleString();
+      } catch (_) {
+        return iso || '-';
+      }
+    }
   };
 
   // ---- Modal ----
@@ -206,6 +228,101 @@
         modal.close();
         status.fetch();
       } catch (_){}
+    }
+  };
+
+  // ---- Duplicates ----
+  const duplicates = {
+    async fetch() {
+      if (!el.duplicatesSection) return;
+      try {
+        utils.show(el.duplicatesLoading);
+        const data = await utils.j(API.duplicates);
+        const groups = Array.isArray(data?.groups) ? data.groups : [];
+        this.render(groups);
+      } catch (e) {
+        if (el.duplicatesList) {
+          el.duplicatesList.innerHTML = '<div class="text-sm opacity-80">Failed to load duplicates.</div>';
+        }
+        utils.hide(el.duplicatesEmpty);
+      } finally {
+        utils.hide(el.duplicatesLoading);
+      }
+    },
+    render(groups) {
+      if (!el.duplicatesSection || !el.duplicatesList || !el.duplicatesEmpty) return;
+      if (!groups.length) {
+        el.duplicatesList.innerHTML = '';
+        utils.show(el.duplicatesEmpty);
+        return;
+      }
+
+      utils.hide(el.duplicatesEmpty);
+      const cards = groups.map((group) => {
+        const badge = group.reviewed
+          ? '<span class="ml-2 text-xs px-2 py-0.5 rounded-full bg-green-600/20 text-green-600">Reviewed</span>'
+          : '';
+        const label = group.type === 'hash' ? 'Exact file match' : 'Name match';
+        const action = group.reviewed ? 'clear' : 'mark';
+        const actionLabel = group.reviewed ? 'Clear review' : 'Mark resolved';
+
+        const fileRows = (group.files || []).map((file) => {
+          const encodedPath = encodeURIComponent(file.relative_path);
+          const downloadUrl = `${API.duplicateFile}?path=${encodedPath}`;
+          const openUrl = `${API.duplicateFile}?path=${encodedPath}&inline=1`;
+          return `
+            <li class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 p-2 rounded border" style="border-color: var(--border-muted); background: var(--bg-soft)">
+              <div class="text-sm break-all">
+                <div><strong>${utils.e(file.name)}</strong></div>
+                <div class="text-xs opacity-70">${utils.formatBytes(file.size)} • ${utils.formatDate(file.modified)}</div>
+              </div>
+              <div class="flex items-center gap-2 text-xs">
+                <a href="${downloadUrl}" class="px-2 py-1 rounded border" style="border-color: var(--border-muted);">Download</a>
+                <a href="${openUrl}" class="px-2 py-1 rounded border" target="_blank" rel="noopener" style="border-color: var(--border-muted);">Open</a>
+              </div>
+            </li>`;
+        }).join('');
+
+        return `
+          <article class="p-4 rounded border space-y-3" style="border-color: var(--border-muted); background: var(--bg-soft)" data-duplicate-group="${utils.e(group.id)}">
+            <header class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
+              <div>
+                <h3 class="font-semibold text-base">${utils.e(label)}</h3>
+                <p class="text-xs opacity-70">Key: ${utils.e(group.key)}</p>
+              </div>
+              <div class="flex items-center gap-2">
+                ${badge}
+                <button class="px-3 py-1 rounded border text-xs" data-duplicate-action="${action}" data-group-id="${utils.e(group.id)}" style="border-color: var(--border-muted);">${actionLabel}</button>
+              </div>
+            </header>
+            <ul class="space-y-2 text-sm">${fileRows}</ul>
+          </article>`;
+      }).join('');
+
+      el.duplicatesList.innerHTML = cards;
+      el.duplicatesList.querySelectorAll('[data-duplicate-action]')?.forEach((btn) => {
+        btn.addEventListener('click', () => {
+          const action = btn.getAttribute('data-duplicate-action');
+          const groupId = btn.getAttribute('data-group-id');
+          this.update(action, groupId);
+        });
+      });
+    },
+    async update(action, groupId) {
+      if (!groupId || !action) return;
+      const payload = {
+        action: action === 'clear' ? 'clear_reviewed' : 'mark_reviewed',
+        group_id: groupId
+      };
+      try {
+        const res = await fetch(API.duplicates, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+        if (!res.ok) throw new Error('Failed to update duplicate state');
+        this.fetch();
+      } catch (_) {}
     }
   };
 
@@ -372,6 +489,7 @@
 
     el.refreshStatusBtn?.addEventListener('click', () => status.fetch());
     el.activeTopRefreshBtn?.addEventListener('click', () => status.fetch());
+    el.duplicatesRefreshBtn?.addEventListener('click', () => duplicates.fetch());
     el.clearCompletedBtn?.addEventListener('click', async () => {
       try { await fetch(API.clearCompleted, { method: 'DELETE' }); status.fetch(); } catch (_) {}
     });
@@ -383,5 +501,6 @@
   // ---- Init ----
   theme.init();
   initEvents();
+  duplicates.fetch();
   status.fetch();
 })();

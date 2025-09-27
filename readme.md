@@ -288,11 +288,7 @@ While this tool can access various sources including those that might contain co
 
 ### Duplicate Downloads Warning
 
-Please note that the current version:
-
-- Does not check for existing files in the download directory
-- Does not verify if books already exist in your Calibre database
-- Exercise caution when requesting multiple books to avoid duplicates
+The downloader now scans the ingest directory (including any books you add manually) for duplicate candidates using both the sanitized filename stem and the file hash. Review the **Potential Duplicates** panel in the web UI to open or download the files, then mark each group as resolved once you have handled it. The warning banner will remain until the underlying files are removed or renamed, so you can still intentionally keep duplicate copies if desired.
 
 ## 💬 Support
 
