@@ -288,11 +288,9 @@ While this tool can access various sources including those that might contain co
 
 ### Duplicate Downloads Warning
 
-Please note that the current version:
+The downloader now checks the ingest directory before each request and surfaces anything that looks like a duplicate. When a match is detected the job is saved to the **Duplicate Downloads** panel instead of being queued automatically. From the web UI you can review these entries, dismiss them, or select **Download anyway** to enqueue the book.
 
-- Does not check for existing files in the download directory
-- Does not verify if books already exist in your Calibre database
-- Exercise caution when requesting multiple books to avoid duplicates
+If you know a duplicate is intentional you can force the request by clicking **Download anyway** in the dialog, from the duplicates list, or by calling `/api/download?id=<BOOK_ID>&force=true`. The duplicate endpoints (`GET /api/duplicates` and `DELETE /api/duplicates?id=<BOOK_ID>[&force=true]`) are also available if you need to inspect or clear items programmatically.
 
 ## 💬 Support
 

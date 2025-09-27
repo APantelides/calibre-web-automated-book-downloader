@@ -200,6 +200,10 @@
             <div class="details-container" id="details-container"></div>
         </div>
 
+        <div id="duplicate-dialog" class="hidden fixed inset-0 z-40 flex items-center justify-center" style="background: rgba(0,0,0,0.45);">
+            <div id="duplicate-dialog-content" class="max-w-md w-full mx-4 rounded border p-4" style="background: var(--bg); border-color: var(--border-muted);"></div>
+        </div>
+
         <!-- Status -->
         <section>
             <div class="flex items-center flex-wrap mb-3">
@@ -212,6 +216,16 @@
             </div>
             <div id="status-loading" class="text-sm opacity-80 hidden">Loading…</div>
             <div id="status-list" class="space-y-2"></div>
+        </section>
+
+        <!-- Duplicates -->
+        <section class="mt-8" id="duplicates-section">
+            <div class="flex items-center justify-between mb-3">
+                <h2 class="text-xl font-semibold">Duplicate Downloads</h2>
+                <button id="duplicates-refresh-button" class="px-3 py-1 rounded border text-sm" style="border-color: var(--border-muted);">Refresh</button>
+            </div>
+            <div id="duplicates-empty" class="text-sm opacity-80">No duplicates detected.</div>
+            <ul id="duplicates-list" class="space-y-2"></ul>
         </section>
     </main>
 

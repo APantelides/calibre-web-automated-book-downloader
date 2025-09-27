@@ -28,6 +28,12 @@
     activeTopSec: document.getElementById('active-downloads-top'),
     activeTopList: document.getElementById('active-downloads-list'),
     activeTopRefreshBtn: document.getElementById('active-refresh-button'),
+    duplicatesSection: document.getElementById('duplicates-section'),
+    duplicatesList: document.getElementById('duplicates-list'),
+    duplicatesEmpty: document.getElementById('duplicates-empty'),
+    duplicatesRefreshBtn: document.getElementById('duplicates-refresh-button'),
+    duplicateDialog: document.getElementById('duplicate-dialog'),
+    duplicateDialogContent: document.getElementById('duplicate-dialog-content'),
     themeToggle: document.getElementById('theme-toggle'),
     themeText: document.getElementById('theme-text'),
     themeMenu: document.getElementById('theme-menu')
@@ -42,7 +48,8 @@
     cancelDownload: '/request/api/download',
     setPriority: '/request/api/queue',
     clearCompleted: '/request/api/queue/clear',
-    activeDownloads: '/request/api/downloads/active'
+    activeDownloads: '/request/api/downloads/active',
+    duplicates: '/request/api/duplicates'
   };
   const FILTERS = ['isbn', 'author', 'title', 'lang', 'sort', 'content', 'format'];
 
@@ -86,6 +93,157 @@
     e(text) { return (text ?? '').toString(); }
   };
 
+  // ---- Duplicate tracking ----
+  const duplicates = {
+    items: [],
+    async fetch() {
+      try {
+        const data = await utils.j(API.duplicates);
+        this.items = Array.isArray(data.duplicates) ? data.duplicates : [];
+        this.render(this.items);
+      } catch (e) {
+        console.error(e);
+      }
+    },
+    render(list) {
+      if (!el.duplicatesSection || !el.duplicatesList || !el.duplicatesEmpty) return;
+      el.duplicatesSection.classList.remove('hidden');
+      if (!list.length) {
+        el.duplicatesList.innerHTML = '';
+        utils.show(el.duplicatesEmpty);
+        return;
+      }
+      utils.hide(el.duplicatesEmpty);
+      const rows = list.map((item) => {
+        const book = item.book || {};
+        const reason = (item.reason || 'duplicate').replace(/_/g, ' ');
+        const detected = item.detected_at ? new Date(item.detected_at).toLocaleString() : '';
+        const ingest = item.ingest_path
+          ? `<div class="text-xs opacity-70 break-all">Target: <code>${utils.e(item.ingest_path)}</code></div>`
+          : '';
+        const existing = item.existing_path
+          ? `<div class="text-xs opacity-70 break-all">Existing: <code>${utils.e(item.existing_path)}</code></div>`
+          : '';
+        return `
+          <li class="p-3 rounded border flex flex-col gap-2" style="border-color: var(--border-muted); background: var(--bg-soft);">
+            <div class="text-sm font-semibold">${utils.e(book.title) || 'Untitled'}</div>
+            <div class="text-xs opacity-80 flex flex-wrap gap-2">
+              <span>Reason: ${utils.e(reason)}</span>
+              ${detected ? `<span>•</span><span>${utils.e(detected)}</span>` : ''}
+              ${book.format ? `<span>•</span><span>${utils.e(book.format)}</span>` : ''}
+            </div>
+            ${ingest}
+            ${existing}
+            <div class="flex gap-2 flex-wrap">
+              <button class="px-3 py-1 rounded bg-blue-600 hover:bg-blue-700 text-white text-xs" data-duplicate-force="${utils.e(item.book_id)}">Download anyway</button>
+              <button class="px-3 py-1 rounded border text-xs" data-duplicate-dismiss="${utils.e(item.book_id)}" style="border-color: var(--border-muted);">Dismiss</button>
+            </div>
+          </li>`;
+      }).join('');
+      el.duplicatesList.innerHTML = rows;
+    },
+    async dismiss(id) {
+      const res = await fetch(`${API.duplicates}?id=${encodeURIComponent(id)}`, { method: 'DELETE' });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || 'Failed to remove duplicate');
+      await this.fetch();
+      return data;
+    },
+    async force(id) {
+      const res = await fetch(`${API.duplicates}?id=${encodeURIComponent(id)}&force=true`, { method: 'DELETE' });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || 'Failed to queue duplicate');
+      await this.fetch();
+      return data;
+    }
+  };
+
+  const duplicatePrompt = {
+    show(duplicate, handlers = {}) {
+      if (!el.duplicateDialog || !el.duplicateDialogContent) return;
+      const book = duplicate?.book || {};
+      const reason = (duplicate?.reason || 'duplicate').replace(/_/g, ' ');
+      const ingest = duplicate?.ingest_path
+        ? `<div class="text-xs opacity-70 break-all">Target file: <code>${utils.e(duplicate.ingest_path)}</code></div>`
+        : '';
+      const existing = duplicate?.existing_path
+        ? `<div class="text-xs opacity-70 break-all">Existing file: <code>${utils.e(duplicate.existing_path)}</code></div>`
+        : '';
+      el.duplicateDialogContent.innerHTML = `
+        <div class="space-y-3">
+          <h3 class="text-lg font-semibold">Possible duplicate detected</h3>
+          <p class="text-sm opacity-80">${utils.e(book.title) || 'This book'} appears to be ${utils.e(reason)}.</p>
+          ${ingest}
+          ${existing}
+          <div class="flex gap-2 justify-end">
+            <button class="px-3 py-1 rounded border text-sm" data-duplicate-save style="border-color: var(--border-muted);">Save to duplicates</button>
+            <button class="px-3 py-1 rounded bg-blue-600 text-white text-sm" data-duplicate-force>Download anyway</button>
+          </div>
+        </div>`;
+      el.duplicateDialog.classList.remove('hidden');
+      el.duplicateDialogContent.querySelector('[data-duplicate-force]')?.addEventListener('click', (ev) => {
+        ev.preventDefault();
+        duplicatePrompt.close();
+        if (typeof handlers.onForce === 'function') handlers.onForce();
+      });
+      el.duplicateDialogContent.querySelector('[data-duplicate-save]')?.addEventListener('click', (ev) => {
+        ev.preventDefault();
+        duplicatePrompt.close();
+        if (typeof handlers.onSave === 'function') handlers.onSave();
+      });
+    },
+    close() {
+      if (!el.duplicateDialog) return;
+      el.duplicateDialog.classList.add('hidden');
+      if (el.duplicateDialogContent) el.duplicateDialogContent.innerHTML = '';
+    }
+  };
+
+  const downloads = {
+    async queue(book, options = {}) {
+      if (!book || !book.id) return;
+      const params = new URLSearchParams({ id: book.id });
+      if (typeof options.priority === 'number') {
+        params.set('priority', String(options.priority));
+      }
+      if (options.force) {
+        params.set('force', 'true');
+      }
+
+      try {
+        const res = await fetch(`${API.download}?${params.toString()}`);
+        let payload = {};
+        try {
+          payload = await res.json();
+        } catch (_) {}
+
+        if (res.status === 409 && payload && payload.duplicate) {
+          duplicates.fetch();
+          duplicatePrompt.show(payload.duplicate, {
+            onForce: () => downloads.queue(book, { ...options, force: true }),
+            onSave: () => {
+              duplicates.fetch();
+              utils.toast('Saved to duplicates list');
+            }
+          });
+          return;
+        }
+
+        if (!res.ok) {
+          throw new Error(payload?.error || 'Failed to queue book');
+        }
+
+        utils.toast('Queued for download');
+        modal.close();
+        status.fetch();
+        duplicates.fetch();
+      } catch (error) {
+        utils.toast('Failed to queue book');
+        console.error(error);
+      }
+    }
+  };
+
   // ---- Modal ----
   const modal = {
     open() { el.modalOverlay?.classList.add('active'); },
@@ -124,7 +282,7 @@
     const detailsBtn = wrapper.querySelector('[data-action="details"]');
     const downloadBtn = wrapper.querySelector('[data-action="download"]');
     detailsBtn?.addEventListener('click', () => bookDetails.show(book.id));
-    downloadBtn?.addEventListener('click', () => bookDetails.download(book));
+    downloadBtn?.addEventListener('click', () => downloads.queue(book));
     return wrapper.firstElementChild;
   }
 
@@ -166,7 +324,7 @@
         const book = await utils.j(`${API.info}?id=${encodeURIComponent(id)}`);
         el.detailsContainer.innerHTML = this.tpl(book);
         document.getElementById('close-details')?.addEventListener('click', modal.close);
-        document.getElementById('download-button')?.addEventListener('click', () => this.download(book));
+        document.getElementById('download-button')?.addEventListener('click', () => downloads.queue(book));
       } catch (e) {
         el.detailsContainer.innerHTML = '<div class="p-4">Failed to load details.</div>';
       }
@@ -199,13 +357,7 @@
         </div>`;
     },
     async download(book) {
-      if (!book) return;
-      try {
-        await utils.j(`${API.download}?id=${encodeURIComponent(book.id)}`);
-        utils.toast('Queued for download');
-        modal.close();
-        status.fetch();
-      } catch (_){}
+      await downloads.queue(book);
     }
   };
 
@@ -376,6 +528,44 @@
       try { await fetch(API.clearCompleted, { method: 'DELETE' }); status.fetch(); } catch (_) {}
     });
 
+    el.duplicatesRefreshBtn?.addEventListener('click', () => duplicates.fetch());
+    el.duplicatesList?.addEventListener('click', async (ev) => {
+      if (!(ev.target instanceof Element)) return;
+      const forceBtn = ev.target.closest('[data-duplicate-force]');
+      if (forceBtn) {
+        ev.preventDefault();
+        const id = forceBtn.getAttribute('data-duplicate-force');
+        if (!id) return;
+        try {
+          await duplicates.force(id);
+          utils.toast('Duplicate queued for download');
+          status.fetch();
+        } catch (error) {
+          utils.toast('Failed to queue duplicate');
+          console.error(error);
+        }
+        return;
+      }
+
+      const dismissBtn = ev.target.closest('[data-duplicate-dismiss]');
+      if (dismissBtn) {
+        ev.preventDefault();
+        const id = dismissBtn.getAttribute('data-duplicate-dismiss');
+        if (!id) return;
+        try {
+          await duplicates.dismiss(id);
+          utils.toast('Duplicate removed');
+        } catch (error) {
+          utils.toast('Failed to remove duplicate');
+          console.error(error);
+        }
+      }
+    });
+
+    el.duplicateDialog?.addEventListener('click', (ev) => {
+      if (ev.target === el.duplicateDialog) duplicatePrompt.close();
+    });
+
     // Close modal on overlay click
     el.modalOverlay?.addEventListener('click', (e) => { if (e.target === el.modalOverlay) modal.close(); });
   }
@@ -384,4 +574,5 @@
   theme.init();
   initEvents();
   status.fetch();
+  duplicates.fetch();
 })();

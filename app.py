@@ -122,7 +122,7 @@ def favicon(_ : typing.Any) -> Response:
     return send_from_directory(os.path.join(app.root_path, 'static', 'media'),
         'favicon.ico', mimetype='image/vnd.microsoft.icon')
 
-from typing import Union, Tuple
+from typing import Union, Tuple, Optional
 
 if DEBUG:
     import subprocess
@@ -263,13 +263,72 @@ def api_download() -> Union[Response, Tuple[Response, int]]:
     except (TypeError, ValueError):
         return jsonify({"error": "Invalid priority value: must be an integer."}), 400
 
+    force_raw = request.args.get('force', 'false')
+    force = str(force_raw).lower() in ('1', 'true', 'yes', 'force', 'on')
+
     try:
-        success = backend.queue_book(book_id, priority)
+        success, duplicate = backend.queue_book(book_id, priority, force=force)
         if success:
-            return jsonify({"status": "queued", "priority": priority})
+            return jsonify({"status": "queued", "priority": priority, "forced": force})
+        if duplicate:
+            return (
+                jsonify({
+                    "error": "duplicate",
+                    "message": "Book appears to already be queued or downloaded.",
+                    "duplicate": duplicate.to_dict(),
+                }),
+                409,
+            )
         return jsonify({"error": "Failed to queue book"}), 500
     except Exception as e:
         logger.error_trace(f"Download error: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/api/duplicates', methods=['GET'])
+@login_required
+def api_list_duplicates() -> Union[Response, Tuple[Response, int]]:
+    try:
+        duplicates = backend.list_duplicates()
+        return jsonify({"duplicates": duplicates})
+    except Exception as e:
+        logger.error_trace(f"Duplicate list error: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/api/duplicates', methods=['DELETE'])
+@login_required
+def api_manage_duplicate() -> Union[Response, Tuple[Response, int]]:
+    book_id = request.args.get('id', '')
+    if not book_id:
+        return jsonify({"error": "No duplicate id provided"}), 400
+
+    force_raw = request.args.get('force', 'false')
+    force = str(force_raw).lower() in ('1', 'true', 'yes', 'force', 'on')
+
+    priority_raw = request.args.get('priority', None)
+    priority_value: Optional[int] = None
+    if priority_raw not in (None, ''):
+        try:
+            priority_value = int(priority_raw)  # type: ignore[assignment]
+        except (TypeError, ValueError):
+            return jsonify({"error": "Invalid priority value: must be an integer."}), 400
+
+    try:
+        if force:
+            success, entry, error_message = backend.force_duplicate(book_id, priority_value)
+            if success and entry:
+                return jsonify({"status": "queued", "duplicate": entry})
+            if entry:
+                return jsonify({"error": error_message or "Failed to queue duplicate", "duplicate": entry}), 500
+            return jsonify({"error": error_message or "Duplicate entry not found"}), 404
+
+        entry = backend.remove_duplicate(book_id)
+        if entry:
+            return jsonify({"status": "removed", "duplicate": entry})
+        return jsonify({"error": "Duplicate entry not found"}), 404
+    except Exception as e:
+        logger.error_trace(f"Duplicate management error: {e}")
         return jsonify({"error": str(e)}), 500
 
 @app.route('/api/status', methods=['GET'])

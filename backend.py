@@ -19,7 +19,7 @@ from threading import Event
 from logger import setup_logger
 from config import CUSTOM_SCRIPT
 from env import INGEST_DIR, TMP_DIR, MAIN_LOOP_SLEEP_TIME, USE_BOOK_TITLE, MAX_CONCURRENT_DOWNLOADS, DOWNLOAD_PROGRESS_UPDATE_INTERVAL
-from models import book_queue, BookInfo, QueueStatus, SearchFilters
+from models import book_queue, BookInfo, QueueStatus, SearchFilters, DuplicateEntry
 import book_manager
 
 logger = setup_logger(__name__)
@@ -62,24 +62,131 @@ def get_book_info(book_id: str) -> Optional[Dict[str, Any]]:
         logger.error_trace(f"Error getting book info: {e}")
         return None
 
-def queue_book(book_id: str, priority: int = 0) -> bool:
+def _build_ingest_paths(book_info: BookInfo) -> Tuple[Path, Path, str]:
+    """Replicate ingest filename logic for duplicate detection."""
+    if USE_BOOK_TITLE:
+        sanitized_title = _sanitize_filename(book_info.title)
+        if not sanitized_title:
+            sanitized_title = "book"
+        unique_suffix = hashlib.md5(book_info.id.encode("utf-8")).hexdigest()[:8]
+        filename_stem = f"{sanitized_title}-{unique_suffix}"
+    else:
+        filename_stem = book_info.id
+
+    extension = f".{book_info.format}" if book_info.format else ""
+    book_name = f"{filename_stem}{extension}"
+    final_path = INGEST_DIR / book_name
+    intermediate_path = INGEST_DIR / f"{book_info.id}.crdownload"
+    return final_path, intermediate_path, filename_stem
+
+
+def detect_duplicate(book_info: BookInfo) -> Optional[DuplicateEntry]:
+    """Return duplicate metadata if the ingest directory already contains the book."""
+    final_path, intermediate_path, _ = _build_ingest_paths(book_info)
+
+    status = book_queue.get_status_for(book_info.id)
+    existing_path: Optional[str] = None
+    reason: Optional[str] = None
+
+    if status and status not in [QueueStatus.ERROR, QueueStatus.DONE, QueueStatus.CANCELLED]:
+        reason = "queued"
+        existing_book = book_queue.get_book(book_info.id)
+        if existing_book and existing_book.download_path:
+            existing_path = existing_book.download_path
+    elif final_path.exists():
+        reason = "on_disk"
+        existing_path = str(final_path)
+    elif intermediate_path.exists():
+        reason = "downloading"
+        existing_path = str(intermediate_path)
+
+    if not reason:
+        return None
+
+    duplicate = DuplicateEntry(
+        book_id=book_info.id,
+        book_info=book_info,
+        ingest_path=str(final_path),
+        reason=reason,
+        existing_path=existing_path,
+        status=status.value if isinstance(status, QueueStatus) else None,
+    )
+    return duplicate
+
+
+def _duplicate_entry_to_dict(entry: DuplicateEntry) -> Dict[str, Any]:
+    """Serialize duplicate entries for API responses."""
+    payload = entry.to_dict()
+    return payload
+
+
+def queue_book(book_id: str, priority: int = 0, force: bool = False) -> Tuple[bool, Optional[DuplicateEntry]]:
     """Add a book to the download queue with specified priority.
-    
+
     Args:
         book_id: Book identifier
         priority: Priority level (lower number = higher priority)
-        
+
     Returns:
-        bool: True if book was successfully queued
+        Tuple[bool, Optional[DuplicateEntry]]: Success flag and duplicate metadata if rejected.
     """
     try:
         book_info = book_manager.get_book_info(book_id)
+        duplicate_entry: Optional[DuplicateEntry] = None
+
+        if force:
+            book_queue.resolve_duplicate(book_id)
+        else:
+            duplicate_entry = detect_duplicate(book_info)
+            if duplicate_entry:
+                duplicate_entry.priority = priority
+                book_queue.record_duplicate(duplicate_entry)
+                logger.info(
+                    "Duplicate detected for %s: reason=%s", book_info.title, duplicate_entry.reason
+                )
+                return False, duplicate_entry
+
         book_queue.add(book_id, book_info, priority)
         logger.info(f"Book queued with priority {priority}: {book_info.title}")
-        return True
+        return True, None
     except Exception as e:
         logger.error_trace(f"Error queueing book: {e}")
-        return False
+        return False, None
+
+
+def list_duplicates() -> List[Dict[str, Any]]:
+    """Return all recorded duplicate entries."""
+    return [_duplicate_entry_to_dict(entry) for entry in book_queue.list_duplicates()]
+
+
+def remove_duplicate(book_id: str) -> Optional[Dict[str, Any]]:
+    """Remove a duplicate entry without queueing the book."""
+    entry = book_queue.resolve_duplicate(book_id)
+    if not entry:
+        return None
+    return _duplicate_entry_to_dict(entry)
+
+
+def force_duplicate(book_id: str, priority: Optional[int] = None) -> Tuple[bool, Optional[Dict[str, Any]], Optional[str]]:
+    """Attempt to queue a duplicate entry, overriding detection."""
+    entry = book_queue.resolve_duplicate(book_id)
+    if not entry:
+        return False, None, "Duplicate entry not found"
+
+    target_priority = priority if priority is not None else entry.priority
+    entry.priority = target_priority
+    success, duplicate = queue_book(book_id, target_priority, force=True)
+    if success:
+        return True, _duplicate_entry_to_dict(entry), None
+
+    # Queue failed; restore the entry for later review
+    if duplicate:
+        book_queue.record_duplicate(duplicate)
+        return False, _duplicate_entry_to_dict(duplicate), "Failed to queue duplicate"
+
+    entry.priority = target_priority
+    book_queue.record_duplicate(entry)
+    return False, _duplicate_entry_to_dict(entry), "Failed to queue duplicate"
 
 def queue_status() -> Dict[str, Dict[str, Any]]:
     """Get current status of the download queue.
