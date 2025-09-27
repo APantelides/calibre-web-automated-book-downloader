@@ -348,13 +348,13 @@ def api_status() -> Union[Response, Tuple[Response, int]]:
         return jsonify({"error": str(e)}), 500
 
 
-@app.route('/api/duplicates', methods=['GET', 'POST'])
+@app.route('/api/duplicate-groups', methods=['GET', 'POST'])
 @login_required
-def api_duplicates() -> Union[Response, Tuple[Response, int]]:
+def api_duplicate_groups() -> Union[Response, Tuple[Response, int]]:
     """Expose duplicate scan results and allow review state updates."""
     if request.method == 'GET':
         try:
-            data = backend.list_duplicates()
+            data = backend.list_duplicate_groups()
             return jsonify(data)
         except Exception as e:
             logger.error_trace(f"Duplicate scan error: {e}")

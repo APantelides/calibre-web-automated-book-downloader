@@ -27,16 +27,16 @@
     duplicatesSection: document.getElementById('duplicates-section'),
     duplicatesList: document.getElementById('duplicates-list'),
     duplicatesEmpty: document.getElementById('duplicates-empty'),
-    duplicatesLoading: document.getElementById('duplicates-loading'),
-    duplicatesRefreshBtn: document.getElementById('refresh-duplicates-button'),
+    duplicatesRefreshBtn: document.getElementById('duplicates-refresh-button'),
+    duplicateGroupsSection: document.getElementById('duplicate-groups-section'),
+    duplicateGroupsList: document.getElementById('duplicate-groups-list'),
+    duplicateGroupsEmpty: document.getElementById('duplicate-groups-empty'),
+    duplicateGroupsLoading: document.getElementById('duplicate-groups-loading'),
+    duplicateGroupsRefreshBtn: document.getElementById('duplicate-groups-refresh-button'),
     // Active downloads (top section under search)
     activeTopSec: document.getElementById('active-downloads-top'),
     activeTopList: document.getElementById('active-downloads-list'),
     activeTopRefreshBtn: document.getElementById('active-refresh-button'),
-    duplicatesSection: document.getElementById('duplicates-section'),
-    duplicatesList: document.getElementById('duplicates-list'),
-    duplicatesEmpty: document.getElementById('duplicates-empty'),
-    duplicatesRefreshBtn: document.getElementById('duplicates-refresh-button'),
     duplicateDialog: document.getElementById('duplicate-dialog'),
     duplicateDialogContent: document.getElementById('duplicate-dialog-content'),
     themeToggle: document.getElementById('theme-toggle'),
@@ -55,6 +55,7 @@
     clearCompleted: '/request/api/queue/clear',
     activeDownloads: '/request/api/downloads/active',
     duplicates: '/request/api/duplicates',
+    duplicateGroups: '/request/api/duplicate-groups',
     duplicateFile: '/request/api/duplicates/file'
   };
   const FILTERS = ['isbn', 'author', 'title', 'lang', 'sort', 'content', 'format'];
@@ -382,33 +383,33 @@
     }
   };
 
-  // ---- Duplicates ----
-  const duplicates = {
+  // ---- Duplicate groups ----
+  const duplicateGroups = {
     async fetch() {
-      if (!el.duplicatesSection) return;
+      if (!el.duplicateGroupsSection) return;
       try {
-        utils.show(el.duplicatesLoading);
-        const data = await utils.j(API.duplicates);
+        utils.show(el.duplicateGroupsLoading);
+        const data = await utils.j(API.duplicateGroups);
         const groups = Array.isArray(data?.groups) ? data.groups : [];
         this.render(groups);
       } catch (e) {
-        if (el.duplicatesList) {
-          el.duplicatesList.innerHTML = '<div class="text-sm opacity-80">Failed to load duplicates.</div>';
+        if (el.duplicateGroupsList) {
+          el.duplicateGroupsList.innerHTML = '<div class="text-sm opacity-80">Failed to load duplicates.</div>';
         }
-        utils.hide(el.duplicatesEmpty);
+        utils.hide(el.duplicateGroupsEmpty);
       } finally {
-        utils.hide(el.duplicatesLoading);
+        utils.hide(el.duplicateGroupsLoading);
       }
     },
     render(groups) {
-      if (!el.duplicatesSection || !el.duplicatesList || !el.duplicatesEmpty) return;
+      if (!el.duplicateGroupsSection || !el.duplicateGroupsList || !el.duplicateGroupsEmpty) return;
       if (!groups.length) {
-        el.duplicatesList.innerHTML = '';
-        utils.show(el.duplicatesEmpty);
+        el.duplicateGroupsList.innerHTML = '';
+        utils.show(el.duplicateGroupsEmpty);
         return;
       }
 
-      utils.hide(el.duplicatesEmpty);
+      utils.hide(el.duplicateGroupsEmpty);
       const cards = groups.map((group) => {
         const badge = group.reviewed
           ? '<span class="ml-2 text-xs px-2 py-0.5 rounded-full bg-green-600/20 text-green-600">Reviewed</span>'
@@ -450,8 +451,8 @@
           </article>`;
       }).join('');
 
-      el.duplicatesList.innerHTML = cards;
-      el.duplicatesList.querySelectorAll('[data-duplicate-action]')?.forEach((btn) => {
+      el.duplicateGroupsList.innerHTML = cards;
+      el.duplicateGroupsList.querySelectorAll('[data-duplicate-action]')?.forEach((btn) => {
         btn.addEventListener('click', () => {
           const action = btn.getAttribute('data-duplicate-action');
           const groupId = btn.getAttribute('data-group-id');
@@ -466,7 +467,7 @@
         group_id: groupId
       };
       try {
-        const res = await fetch(API.duplicates, {
+        const res = await fetch(API.duplicateGroups, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(payload)
@@ -640,12 +641,12 @@
 
     el.refreshStatusBtn?.addEventListener('click', () => status.fetch());
     el.activeTopRefreshBtn?.addEventListener('click', () => status.fetch());
+    el.duplicateGroupsRefreshBtn?.addEventListener('click', () => duplicateGroups.fetch());
     el.duplicatesRefreshBtn?.addEventListener('click', () => duplicates.fetch());
     el.clearCompletedBtn?.addEventListener('click', async () => {
       try { await fetch(API.clearCompleted, { method: 'DELETE' }); status.fetch(); } catch (_) {}
     });
 
-    el.duplicatesRefreshBtn?.addEventListener('click', () => duplicates.fetch());
     el.duplicatesList?.addEventListener('click', async (ev) => {
       if (!(ev.target instanceof Element)) return;
       const forceBtn = ev.target.closest('[data-duplicate-force]');
@@ -690,7 +691,7 @@
   // ---- Init ----
   theme.init();
   initEvents();
+  duplicateGroups.fetch();
   duplicates.fetch();
   status.fetch();
-  duplicates.fetch();
 })();

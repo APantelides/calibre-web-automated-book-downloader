@@ -109,7 +109,7 @@ def resolve_ingest_file(relative_path: str) -> Path:
     return candidate
 
 
-def list_duplicates() -> Dict[str, Any]:
+def list_duplicate_groups() -> Dict[str, Any]:
     """Return potential duplicate groups within ``INGEST_DIR``."""
     if not INGEST_DIR.exists():
         return {"groups": []}
