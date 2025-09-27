@@ -19,9 +19,9 @@ def queue_stub(monkeypatch):
 
     calls = []
 
-    def fake_queue(book_id, priority):
-        calls.append((book_id, priority))
-        return True
+    def fake_queue(book_id, priority, force=False):
+        calls.append((book_id, priority, force))
+        return True, None
 
     monkeypatch.setattr(backend, "queue_book", fake_queue)
     monkeypatch.setattr(flask_app_module.backend, "queue_book", fake_queue)
@@ -57,7 +57,8 @@ def test_api_download_allows_missing_priority(client, queue_stub):
     payload = response.get_json()
     assert payload["status"] == "queued"
     assert payload["priority"] == 0
-    assert queue_stub == [("book-default", 0)]
+    assert payload["forced"] is False
+    assert queue_stub == [("book-default", 0, False)]
 
 
 def test_api_download_accepts_valid_priority(client, queue_stub):
@@ -69,4 +70,5 @@ def test_api_download_accepts_valid_priority(client, queue_stub):
     payload = response.get_json()
     assert payload["status"] == "queued"
     assert payload["priority"] == 5
-    assert queue_stub == [("book-priority", 5)]
+    assert payload["forced"] is False
+    assert queue_stub == [("book-priority", 5, False)]

@@ -196,19 +196,23 @@
         </section>
 
         <!-- Duplicates -->
-        <section id="duplicates-section" class="mb-8">
+        <section id="duplicate-groups-section" class="mb-8">
             <div class="flex items-center justify-between mb-3">
                 <h2 class="text-xl font-semibold">Potential Duplicates</h2>
-                <button id="refresh-duplicates-button" class="px-3 py-1 rounded border text-sm" style="border-color: var(--border-muted);">Refresh</button>
+                <button id="duplicate-groups-refresh-button" class="px-3 py-1 rounded border text-sm" style="border-color: var(--border-muted);">Refresh</button>
             </div>
-            <div id="duplicates-loading" class="text-sm opacity-80 hidden">Scanning…</div>
-            <div id="duplicates-empty" class="text-sm opacity-80 hidden">No duplicates detected.</div>
-            <div id="duplicates-list" class="space-y-3"></div>
+            <div id="duplicate-groups-loading" class="text-sm opacity-80 hidden">Scanning…</div>
+            <div id="duplicate-groups-empty" class="text-sm opacity-80 hidden">No duplicates detected.</div>
+            <div id="duplicate-groups-list" class="space-y-3"></div>
         </section>
 
         <!-- Modal -->
         <div class="modal-overlay" id="modal-overlay" role="dialog" aria-modal="true">
             <div class="details-container" id="details-container"></div>
+        </div>
+
+        <div id="duplicate-dialog" class="hidden fixed inset-0 z-40 flex items-center justify-center" style="background: rgba(0,0,0,0.45);">
+            <div id="duplicate-dialog-content" class="max-w-md w-full mx-4 rounded border p-4" style="background: var(--bg); border-color: var(--border-muted);"></div>
         </div>
 
         <!-- Status -->
@@ -223,6 +227,16 @@
             </div>
             <div id="status-loading" class="text-sm opacity-80 hidden">Loading…</div>
             <div id="status-list" class="space-y-2"></div>
+        </section>
+
+        <!-- Duplicates -->
+        <section class="mt-8" id="duplicates-section">
+            <div class="flex items-center justify-between mb-3">
+                <h2 class="text-xl font-semibold">Duplicate Downloads</h2>
+                <button id="duplicates-refresh-button" class="px-3 py-1 rounded border text-sm" style="border-color: var(--border-muted);">Refresh</button>
+            </div>
+            <div id="duplicates-empty" class="text-sm opacity-80">No duplicates detected.</div>
+            <ul id="duplicates-list" class="space-y-2"></ul>
         </section>
     </main>
 

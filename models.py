@@ -1,7 +1,7 @@
 """Data structures and models used across the application."""
 
-from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Tuple
+from dataclasses import dataclass, field, asdict
+from typing import Dict, List, Optional, Tuple, Any
 from enum import Enum
 from datetime import datetime, timedelta
 from threading import Lock, Event
@@ -50,6 +50,33 @@ class BookInfo:
     priority: int = 0
     progress: Optional[float] = None
 
+@dataclass
+class DuplicateEntry:
+    """Represents a suspected duplicate download request."""
+    book_id: str
+    book_info: BookInfo
+    ingest_path: str
+    reason: str
+    existing_path: Optional[str] = None
+    priority: int = 0
+    detected_at: datetime = field(default_factory=datetime.utcnow)
+    status: Optional[str] = None
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Serialize the duplicate entry for API responses."""
+        return {
+            "book_id": self.book_id,
+            "ingest_path": self.ingest_path,
+            "reason": self.reason,
+            "existing_path": self.existing_path,
+            "priority": self.priority,
+            "detected_at": self.detected_at.isoformat(),
+            "status": self.status,
+            "book": {
+                key: value for key, value in asdict(self.book_info).items() if value is not None
+            },
+        }
+
 class BookQueue:
     """Thread-safe book queue manager with priority support and cancellation."""
     def __init__(self) -> None:
@@ -62,6 +89,7 @@ class BookQueue:
         self._cancel_flags: dict[str, Event] = {}  # Cancellation flags for active downloads
         self._active_downloads: dict[str, bool] = {}  # Track currently downloading books
         self._queue_not_empty = Event()
+        self._duplicates: dict[str, DuplicateEntry] = {}
     
     def add(self, book_id: str, book_data: BookInfo, priority: int = 0) -> None:
         """Add a book to the queue with specified priority.
@@ -153,6 +181,16 @@ class BookQueue:
         with self._lock:
             if book_id in self._book_data:
                 self._book_data[book_id].progress = progress
+
+    def get_status_for(self, book_id: str) -> Optional[QueueStatus]:
+        """Return the stored status for a specific book if present."""
+        with self._lock:
+            return self._status.get(book_id)
+
+    def get_book(self, book_id: str) -> Optional[BookInfo]:
+        """Return stored book information for a specific book if present."""
+        with self._lock:
+            return self._book_data.get(book_id)
             
     def get_status(self) -> Dict[QueueStatus, Dict[str, BookInfo]]:
         """Get current queue status."""
@@ -380,6 +418,22 @@ class BookQueue:
         """Set the status timeout duration in hours."""
         with self._lock:
             self._status_timeout = timedelta(hours=hours)
+
+    def record_duplicate(self, duplicate: DuplicateEntry) -> DuplicateEntry:
+        """Store a suspected duplicate download attempt."""
+        with self._lock:
+            self._duplicates[duplicate.book_id] = duplicate
+            return duplicate
+
+    def list_duplicates(self) -> List[DuplicateEntry]:
+        """Return a list of all suspected duplicate download attempts."""
+        with self._lock:
+            return list(self._duplicates.values())
+
+    def resolve_duplicate(self, book_id: str) -> Optional[DuplicateEntry]:
+        """Remove a duplicate entry once handled."""
+        with self._lock:
+            return self._duplicates.pop(book_id, None)
 
 
 # Global instance of BookQueue

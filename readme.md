@@ -62,11 +62,11 @@ An intuitive web interface for searching and requesting book downloads, designed
 | `GID`             | Runtime group ID        | `100`              |
 | `CWA_DB_PATH`     | Calibre-Web's database  | None               |
 | `ENABLE_LOGGING`  | Enable log file         | `true`             |
-| `LOG_LEVEL`       | Log level to use        | `info`             |
+| `LOG_LEVEL`       | Log level to use        | `INFO`             |
 
 If you wish to enable authentication, you must set `CWA_DB_PATH` to point to Calibre-Web's `app.db`, in order to match the username and password.
 
-If logging is enabld, log folder default location is `/var/log/cwa-book-downloader`
+If logging is enabled, the log folder default location is `/var/log/cwa-book-downloader`
 Available log levels: `DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL`. Higher levels show fewer messages.
 
 Note that if using TOR, the TZ will be calculated automatically based on IP.
@@ -75,7 +75,7 @@ Note that if using TOR, the TZ will be calculated automatically based on IP.
 
 | Variable               | Description                                               | Default Value                     |
 | ---------------------- | --------------------------------------------------------- | --------------------------------- |
-| `MAX_RETRY`            | Maximum retry attempts                                    | `3`                               |
+| `MAX_RETRY`            | Maximum retry attempts                                    | `10`                              |
 | `DEFAULT_SLEEP`        | Retry delay (seconds)                                     | `5`                               |
 | `MAIN_LOOP_SLEEP_TIME` | Processing loop delay (seconds)                           | `5`                               |
 | `SUPPORTED_FORMATS`    | Supported book formats                                    | `epub,mobi,azw3,fb2,djvu,cbz,cbr` |
@@ -90,8 +90,10 @@ If you change `BOOK_LANGUAGE`, you can add multiple comma separated languages, s
 
 | Variable               | Description                                               | Default Value                     |
 | ---------------------- | --------------------------------------------------------- | --------------------------------- |
-| `AA_BASE_URL`          | Base URL of Annas-Archive (could be changed for a proxy)  | `https://annas-archive.org`       |
+| `AA_BASE_URL`          | Base URL of Annas-Archive (could be changed for a proxy)  | `auto`                            |
 | `USE_CF_BYPASS`        | Disable CF bypass and use alternative links instead       | `true`                            |
+
+If `AA_BASE_URL` remains set to `auto`, the downloader will automatically probe the built-in Anna's Archive mirrors (and any values you provide in `AA_ADDITIONAL_URLS`) and select the first reachable host.
 
 If you are a donator on AA, you can use your Key in `AA_DONATOR_KEY` to speed up downloads and bypass the wait times.
 If disabling the cloudflare bypass, you will be using alternative download hosts, such as libgen or z-lib, but they usually have a delay before getting the more recent books and their collection is not as big as aa's. But this setting should work for the majority of books.
@@ -146,7 +148,7 @@ USE_DOH=true
 
 | Variable               | Description                                                 | Default Value           |
 | ---------------------- | ----------------------------------------------------------- | ----------------------- |
-| `CUSTOM_SCRIPT`        | Path to an executable script that tuns after each download  | ``                      |
+| `CUSTOM_SCRIPT`        | Path to an executable script that runs after each download  | ``                      |
 
 If `CUSTOM_SCRIPT` is set, it will be executed after each successful download but before the file is moved to the ingest directory. This allows for custom processing like format conversion or validation.
 
@@ -265,7 +267,7 @@ HEALTHCHECK --interval=30s --timeout=30s --start-period=5s --retries=3 \
 
 Logs are available in:
 
-- Container: `/var/logs/cwa-book-downloader.log`
+- Container: `/var/log/cwa-book-downloader/cwa-book-downloader.log`
 - Docker logs: Access via `docker logs`
 
 ## 🤝 Contributing
@@ -287,6 +289,10 @@ While this tool can access various sources including those that might contain co
 - Using the tool in compliance with their local regulations
 
 ### Duplicate Downloads Warning
+
+The downloader now checks the ingest directory before each request and surfaces anything that looks like a duplicate. When a match is detected the job is saved to the **Duplicate Downloads** panel instead of being queued automatically. From the web UI you can review these entries, dismiss them, or select **Download anyway** to enqueue the book.
+
+If you know a duplicate is intentional you can force the request by clicking **Download anyway** in the dialog, from the duplicates list, or by calling `/api/download?id=<BOOK_ID>&force=true`. The duplicate endpoints (`GET /api/duplicates` and `DELETE /api/duplicates?id=<BOOK_ID>[&force=true]`) are also available if you need to inspect or clear items programmatically.
 
 The downloader now scans the ingest directory (including any books you add manually) for duplicate candidates using both the sanitized filename stem and the file hash. Review the **Potential Duplicates** panel in the web UI to open or download the files, then mark each group as resolved once you have handled it. The warning banner will remain until the underlying files are removed or renamed, so you can still intentionally keep duplicate copies if desired.
 
